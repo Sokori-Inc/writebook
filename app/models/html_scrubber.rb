@@ -13,6 +13,15 @@ class HtmlScrubber < Rails::Html::PermitScrubber
     controls autoplay muted playsinline allowfullscreen frameborder loading open reversed
   ].freeze
 
+  # Bump whenever the scrubbing rules tighten. Fragment caches wrapping scrubbed
+  # content key on cache_version, so a fragment rendered under the old rules —
+  # or under a previous embed policy — is re-scrubbed rather than served verbatim.
+  POLICY_VERSION = 1
+
+  def self.cache_version
+    "#{POLICY_VERSION}-#{EmbedProvider.cache_version}"
+  end
+
   def initialize
     super
     self.tags = Rails::Html::WhiteListSanitizer.allowed_tags + %w[
@@ -30,6 +39,33 @@ class HtmlScrubber < Rails::Html::PermitScrubber
   def scrub(node)
     super.tap do
       remove_foreign_actions(node) if node.element?
+    end
+  end
+
+  # Once an embed allowlist is configured, an <iframe> survives only when an
+  # approved provider vouches for its src (host + path shape). Otherwise, and
+  # for every other tag, the default PermitScrubber behavior applies.
+  def keep_node?(node)
+    if node.name == "iframe" && EmbedProvider.configured?
+      EmbedProvider.allows?(node["src"])
+    else
+      super
+    end
+  end
+
+  # For a kept <iframe> under the allowlist, strip every attribute the matching
+  # provider doesn't permit — so srcdoc, sandbox, name, on* handlers, style, and
+  # allow/referrer policies can't ride along on an otherwise-approved embed. The
+  # surviving attributes carry no author-controlled URI or CSS value (src itself
+  # is validated by EmbedProvider), so no further per-value sanitizing is needed.
+  def scrub_attributes(node)
+    if node.name == "iframe" && EmbedProvider.configured?
+      permitted = EmbedProvider.match(node["src"])&.attributes || []
+      node.attribute_nodes.each do |attr|
+        node.remove_attribute(attr.name) unless permitted.include?(attr.name)
+      end
+    else
+      super
     end
   end
 

@@ -9,6 +9,30 @@ class HtmlScrubberTest < ActiveSupport::TestCase
     scrub(ActionText::Markdown.renderer.call.render(markdown))
   end
 
+  test "cache_version changes when the embed policy does" do
+    permissive = HtmlScrubber.cache_version
+    assert_includes permissive, EmbedProvider.cache_version
+
+    ENV["WRITEBOOK_EMBED_PROVIDERS"] = %([{"hosts":["x.example"],"path_prefix":"/e"}])
+    assert_not_equal permissive, HtmlScrubber.cache_version
+  end
+
+  test "keeps an iframe from any origin while embeds are permissive, attributes still scrubbed" do
+    result = scrub(%(<iframe src="http://anything.example/x" srcdoc="<script>alert(1)</script>" onload="alert(1)" sandbox="" allowfullscreen></iframe>))
+    assert_includes result, %(<iframe src="http://anything.example/x")
+    assert_includes result, "allowfullscreen"
+    assert_not_includes result, "srcdoc"
+    assert_not_includes result, "onload"
+    assert_not_includes result, "sandbox"
+  end
+
+  test "keeps only approved-provider iframes once an allowlist is configured" do
+    ENV["WRITEBOOK_EMBED_PROVIDERS"] = EmbedProvider::DEFAULTS.to_json
+
+    assert_includes scrub(%(<iframe src="https://www.youtube.com/embed/abc"></iframe>)), "<iframe"
+    assert_not_includes scrub(%(<iframe src="https://anything.example/embed/abc"></iframe>)), "<iframe"
+  end
+
   test "strips inline event handlers on allowed tags" do
     %w[iframe img video audio details].each do |tag|
       result = scrub(%(<#{tag} onload="alert(1)" onerror="alert(1)"></#{tag}>))
@@ -79,7 +103,7 @@ class HtmlScrubberTest < ActiveSupport::TestCase
   end
 
   test "strips value-sensitive iframe attributes but keeps safe embed attributes" do
-    result = scrub(%(<iframe src="https://ex.com" allow="camera" referrerpolicy="unsafe-url" sandbox="allow-scripts" allowfullscreen frameborder="0"></iframe>))
+    result = scrub(%(<iframe src="https://player.vimeo.com/video/76979871" allow="camera" referrerpolicy="unsafe-url" sandbox="allow-scripts" allowfullscreen frameborder="0"></iframe>))
     assert_not_includes result, "allow="
     assert_not_includes result, "referrerpolicy"
     assert_not_includes result, "sandbox"
